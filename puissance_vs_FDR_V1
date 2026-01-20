@@ -1,0 +1,167 @@
+
+# CODE : EVALUATION BVS vs BVS+KO : avec 3 graphes de comparaison 
+
+rm(list = ls()) 
+set.seed(123) 
+
+library(ggplot2)
+library(varbvs)
+library(glmnet)
+library(doParallel)
+library(foreach)
+library(dplyr)
+library(tidyr)
+library(ggpubr)
+library(knockoff)
+
+# 1. PARAMÈTRES ET DONNÉES
+
+# Assurez-vous que ce chemin est correct sur la session R
+chemin_fichier <- "C:/Users/axelC/Downloads/TRSANTEApo/dat_vst_NS_no_Inel_selected.txt"
+if (!file.exists(chemin_fichier)) stop("Fichier introuvable.")
+
+RNA.data <- read.table(file = chemin_fichier, head = TRUE) 
+X_real <- as.matrix(RNA.data)
+n <- nrow(X_real); p <- ncol(X_real)
+
+n_sim <- 20          # Nombre de répétitions 
+k_exp <- 10          # Nombre de gènes actifs
+amplitude_exp <- 3   
+list_target_fdr <- seq(0.01, 1, length.out = 30) # Grille de Target FDR (Axe X)
+
+# 2.FONCTIONS DE SIMULATION ET LES FONCTIONS DE CALCUL
+
+beta.sample <- function(p, k, amplitude){ 
+  nonzero <- sample(p, k)
+  beta <- rep(0, p)
+  beta[nonzero] <- amplitude * sample(c(1, -1), k, replace = TRUE) 
+  return(beta) 
+}
+
+y.sample <- function(X, beta, method, scale = FALSE, threshold = 0.5){ 
+  if (scale == TRUE){X = scale(X)}
+  if (method == "linear"){ 
+    y_prob <- 1 / (1 + exp(- (X%*%beta))) 
+    y <- 1*(y_prob>=threshold) 
+  }
+  return(y)
+}
+
+# Fonctions de calcul de performance 
+fdp_calc <- function(selected, beta_coeff) {
+  return(sum(beta_coeff[selected] == 0) / max(1, length(selected)))
+}
+
+power_calc <- function(selected, beta_coeff) {
+  return(length(which(beta_coeff[selected] != 0)) / max(1, length(which(beta_coeff != 0))))
+}
+
+# fonction LSCIP parallélisée
+create.LSCIP_parallel <- function(X) {
+  p <- ncol(X); n <- nrow(X)
+  ncores <- parallel::detectCores() - 1
+  cl <- parallel::makeCluster(ncores); doParallel::registerDoParallel(cl)
+  result <- foreach(j = 1:p, .packages = c("glmnet")) %dopar% {
+    y = X[, j]; X_ = X[, -j]
+    modelj <- cv.glmnet(X_, y); betaj <- as.matrix(coef(modelj, s = "lambda.min"))
+    X_j <- cbind(rep(1, n), X_); residuals_j = y - X_j %*% betaj
+    lasso_x_j = X_j %*% betaj
+    list(residuals_j, lasso_x_j)
+  }
+  parallel::stopCluster(cl)
+  mat_residuals <- sapply(result, `[[`, 1); mat_lasso_x <- sapply(result, `[[`, 2)
+  return(mat_lasso_x + mat_residuals[, sample(p)]) 
+}
+
+# 3. FONCTION DE MISE EN FORME DES DONNÉES 
+
+df_perf_maker <- function(table.perf, list_fdr, stats_names, n.rep){
+  n.stats <- length(stats_names)
+  len_fdr <- length(list_fdr)
+  
+  df_p <- data.frame(power=NA, target_fdr=rep(list_fdr, n.stats), std=NA, KO=rep(stats_names, each=len_fdr))
+  df_f <- data.frame(fdp=NA, target_fdr=rep(list_fdr, n.stats), std=NA, KO=rep(stats_names, each=len_fdr))
+  
+  for (i in 1:n.stats){
+    list_FDP_perf <- as.numeric(table.perf[1, seq(i, ncol(table.perf), n.stats)])
+    list_power_perf <- as.numeric(table.perf[2, seq(i, ncol(table.perf), n.stats)])
+    
+    for (j in 1:len_fdr){
+      idx_range <- seq(j, length(list_power_perf), len_fdr)
+      df_p$power[(i-1)*len_fdr + j] <- mean(list_power_perf[idx_range])
+      df_p$std[(i-1)*len_fdr + j]   <- sd(list_power_perf[idx_range])
+      df_f$fdp[(i-1)*len_fdr + j]   <- mean(list_FDP_perf[idx_range])
+      df_f$std[(i-1)*len_fdr + j]   <- sd(list_FDP_perf[idx_range])
+    }
+  }
+  return(list(df_p, df_f))
+}
+
+# 4. BOUCLE DE SIMULATION 
+
+cat("Calcul des Knockoffs LSCIP...\n")
+X_ko <- create.LSCIP_parallel(X_real)
+
+# Matrice pour stocker : ligne 1 = FDP, ligne 2 = Power
+table.perf.comp <- matrix(0, nrow = 2, ncol = length(list_target_fdr) * 2 * n_sim)
+
+for (i in 1:n_sim) {
+  cat("Simulation n°", i, "/", n_sim, "\r")
+  current_beta <- beta.sample(p, k_exp, amplitude_exp)
+  y_curr <- y.sample(X_real, current_beta, method = "linear", scale = TRUE)
+  
+  # Estimation BVS 
+  fit_simple <- varbvs(X = scale(X_real), Z = NULL, y = as.numeric(y_curr), family = "binomial", verbose = FALSE)
+  fit_ko <- varbvs(X = scale(cbind(X_real, X_ko)), Z = NULL, y = as.numeric(y_curr), family = "binomial", verbose = FALSE)
+  
+  pip_simple <- fit_simple$pip
+  stat_w <- fit_ko$pip[1:p] - fit_ko$pip[(p+1):(2*p)]
+  
+  for (j in 1:length(list_target_fdr)) {
+    q <- list_target_fdr[j]
+    
+    # Sélection : Simple (seuil sur PIP) vs KO (Filtre Knockoff)
+    sel_simple <- which(pip_simple >= (1 - q))  # #problème sur le filtre pour BVS simple ???
+    thres_w <- knockoff.threshold(stat_w, fdr = q, offset = 1)
+    sel_ko <- which(stat_w >= thres_w)
+    
+    # Remplissage de la table
+    col_idx_s <- (i-1)*length(list_target_fdr)*2 + (j-1)*2 + 1
+    col_idx_k <- (i-1)*length(list_target_fdr)*2 + (j-1)*2 + 2
+    
+    table.perf.comp[1, col_idx_s] <- fdp_calc(sel_simple, current_beta)
+    table.perf.comp[2, col_idx_s] <- power_calc(sel_simple, current_beta)
+    table.perf.comp[1, col_idx_k] <- fdp_calc(sel_ko, current_beta)
+    table.perf.comp[2, col_idx_k] <- power_calc(sel_ko, current_beta)
+  }
+}
+
+# 5. GÉNÉRATION DES GRAPHES 
+
+res_dfs <- df_perf_maker(table.perf.comp, list_target_fdr, c("BVS Simple", "BVS+KO"), n_sim)
+df_p <- res_dfs[[1]]; df_f <- res_dfs[[2]]
+colors_paper <- c("BVS Simple" = "#993300", "BVS+KO" = "#6050dc")
+
+# Graphe 1 : Power vs Target FDR
+g1 <- ggplot(df_p, aes(x = target_fdr, y = power, color = KO)) +
+  geom_line(linewidth = 1.5) +
+  geom_ribbon(aes(ymin = power - std, ymax = power + std, fill = KO), alpha = 0.15, color = NA) +
+  scale_color_manual(values = colors_paper) + scale_fill_manual(values = colors_paper) +
+  labs(title = "Power vs Target FDR", x = "Target FDR (q)", y = "Power") + theme_minimal()
+
+# Graphe 2 : FDP vs Target FDR (avec ligne de contrôle)
+g2 <- ggplot(df_f, aes(x = target_fdr, y = fdp, color = KO)) +
+  geom_line(linewidth = 1.5) +
+  geom_abline(intercept = 0, slope = 1, linetype = "dashed") +
+  geom_ribbon(aes(ymin = fdp - std, ymax = fdp + std, fill = KO), alpha = 0.15, color = NA) +
+  scale_color_manual(values = colors_paper) + scale_fill_manual(values = colors_paper) +
+  labs(title = "FDP vs Target FDR", x = "Target FDR (q)", y = "FDP") + theme_minimal()
+
+# Graphe 3 : Power vs FDP
+g3 <- ggplot(df_p, aes(x = df_f$fdp, y = power, color = KO)) +
+  geom_point(size = 2) + geom_line() +
+  scale_color_manual(values = colors_paper) +
+  labs(title = "Power vs FDP", x = "FDP ", y = "Power") + theme_minimal()
+
+# Affichage final
+ggarrange(g1, g2, g3, ncol = 1, common.legend = TRUE, legend = "right")
