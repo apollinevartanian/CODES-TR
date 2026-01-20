@@ -1,0 +1,161 @@
+# HISTOS COMPARATIFS (RANGS W vs Z): W et Z sur le même graphe : code mis à jour 
+
+#  1. CHARGEMENT DES BIBLIOTHÈQUES 
+library(knockoff)
+library(dplyr)
+library(ggplot2)
+library(varbvs)
+library(glmnet)
+library(foreach)
+library(doParallel)
+
+#  2. FONCTION  : LSCIP 
+#génère des Knockoffs basés sur les résidus du Lasso
+create.LSCIP_M_times <- function(X, M = 1){
+  p <- ncol(X); n <- nrow(X)
+  mat_residuals <- matrix(nrow = n, ncol = p)
+  mat_lasso_x <- matrix(nrow = n, ncol = p)
+  
+  # Gestion des coeurs pour le calcul parallèle
+  ncores <- as.numeric(Sys.getenv("SLURM_CPUS_PER_TASK"))
+  if (is.na(ncores) || ncores == 0) { ncores <- parallel::detectCores() }
+  
+  cluster <- makeCluster(ncores - 1)
+  registerDoParallel(cluster)
+  
+  result <- foreach(j = 1:p, .packages = c("glmnet")) %dopar% {
+    X_ <- X[,-j] |> as.matrix()
+    Xj <- X[, j]
+    modelj <- cv.glmnet(X_, Xj)
+    Xj_hat <- predict(modelj, s = modelj$lambda.min, newx = X_)
+    list(Xj - Xj_hat, Xj_hat)
+  }
+  stopCluster(cl = cluster)
+  
+  for (j in 1:p) {
+    mat_residuals[, j] <- result[[j]][[1]]
+    mat_lasso_x[, j]   <- result[[j]][[2]]
+  }
+  
+  list_KO <- list()
+  for (m in 1:M){
+    mat_shuffled_residuals <- apply(mat_residuals, 2, function(col) sample(col, replace = FALSE))
+    X_KO <- mat_lasso_x + mat_shuffled_residuals 
+    list_KO[[m]] <- X_KO |> as.data.frame()
+  }
+  if (M == 1){ return(as.matrix(list_KO[[1]])) } else { return(list_KO) }
+}
+
+# 3. CHARGEMENT DES DONNÉES 
+chemin_fichier <- "C:/Users/axelC/Downloads/TRSANTEApo/dat_vst_NS_no_Inel_selected.txt"
+RNA.data <- read.table(file = chemin_fichier, head = TRUE) 
+X_real <- as.matrix(RNA.data)
+n <- nrow(X_real); p <- ncol(X_real)
+
+# Génération des Knockoffs avec fonction
+cat("Génération des Knockoffs via LSCIP (cela peut prendre du temps)...\n")
+X_ko <- create.LSCIP_M_times(X_real, M = 1)
+
+#  4. PARAMÈTRES ET FONCTIONS DE SIMULATION 
+n_sim_y <- 5          
+k_exp <- 10            
+amplitude_exp <- 3   
+
+beta.sample <- function(p, k, amplitude) {
+  beta <- rep(0, p)
+  indices <- sample(1:p, k)
+  beta[indices] <- amplitude * sample(c(-1, 1), k, replace = TRUE)
+  return(beta)
+}
+
+y.sample <- function(X, beta, method, scale = FALSE, threshold = 0.5){ 
+  n <- nrow(X); p <- ncol(X)
+  if (scale == TRUE){X = scale(X)}
+  if (method == "linear"){ 
+    y_prob <- 1 / (1 + exp(- (X%*%beta))) 
+    y <- 1*(y_prob>=threshold) 
+  } else if (method == "interaction"){ 
+    beta.ind <- which(beta!=0) 
+    X.part <- X[, sample(beta.ind)]
+    k <- length(beta.ind); amplitude <- abs(beta[beta.ind][1])
+    choice <- sample(c(1, -1), 1)
+    if (choice == 1) { vector <- c(rep(1, round(k/4)), rep(-1, k/2-round(k/4))) } 
+    else { vector <- c(rep(1, k/2-round(k/4)), rep(-1, round(k/4))) }
+    shuffled.vector <- sample(vector); coeff <- amplitude * shuffled.vector
+    int.product = 0
+    for (j in 1:(k/2)){ int.product <- int.product + coeff[j]*X.part[,2*j-1]*X.part[,2*j] }
+    y_prob <- 1 / (1 + exp(- int.product ))
+    y <- 1*(y_prob>=threshold)
+  }
+  return(y)
+}
+
+stat.W_KO_internal <- function(X, X_k, Y) {
+  Xaug_std <- scale(cbind(X, X_k))
+  fit <- varbvs(X = Xaug_std, Z = NULL, y = as.numeric(Y), 
+                family = "binomial", verbose = FALSE, maxiter = 100)
+  p_dim <- ncol(X)
+  return(fit$pip[1:p_dim] - fit$pip[(p_dim+1):(2*p_dim)])
+}
+
+stat.Z_Simple_internal <- function(X, Y) {
+  X_std <- scale(X)
+  fit <- varbvs(X = X_std, Z = NULL, y = as.numeric(Y), 
+                family = "binomial", verbose = FALSE, maxiter = 100)
+  return(fit$pip)
+}
+
+#  5. BOUCLE DE CALCUL 
+final_results_ranks <- data.frame()
+set.seed(123) 
+
+for (i in 1:n_sim_y) {
+  cat("Analyse des rangs - Simulation n°", i, "\n")
+  current_beta <- beta.sample(p, k_exp, amplitude_exp)
+  y_curr <- y.sample(X_real, current_beta, method = "linear", scale = TRUE)
+  
+  if(length(unique(y_curr)) < 2) {
+    cat("  Simulation ignorée : Y constant.\n")
+    next 
+  }
+  
+  w_vals <- stat.W_KO_internal(X_real, X_ko, y_curr)
+  z_vals <- stat.Z_Simple_internal(X_real, y_curr)
+  
+  df_w <- data.frame(Gene = 1:p, Valeur = w_vals, Type = "W (KO)", 
+                     Etat = ifelse(current_beta == 0, "Nulle", "Active")) %>%
+    arrange(desc(Valeur)) %>%
+    mutate(Rang = row_number(), Iteration = i)
+  
+  df_z <- data.frame(Gene = 1:p, Valeur = z_vals, Type = "Z (Simple)", 
+                     Etat = ifelse(current_beta == 0, "Nulle", "Active")) %>%
+    arrange(desc(Valeur)) %>%
+    mutate(Rang = row_number(), Iteration = i)
+  
+  final_results_ranks <- rbind(final_results_ranks, df_w, df_z)
+}
+
+#  6. GRAPHIQUE FINAL 
+plot_ranks_compare <- function(df, titre) {
+  df_actifs <- df %>% filter(Etat == "Active")
+  
+  ggplot(df_actifs, aes(x = as.factor(Gene), y = Rang, fill = Type)) +
+    geom_bar(stat = "identity", position = "dodge", width = 0.7) +
+    scale_y_log10() +
+    facet_wrap(~Iteration, nrow = 2, scales = "free_x") +
+    scale_fill_manual(values = c("W (KO)" = "steelblue", "Z (Simple)" = "orange")) +
+    labs(
+      title = titre,
+      subtitle = paste("Comparaison des rangs pour les", k_exp, "gènes actifs (Échelle Log)"),
+      x = "ID du Gène Actif",
+      y = "Rang (Log10)",
+      fill = "Méthode"
+    ) +
+    theme_minimal() +
+    theme(
+      axis.text.x = element_text(angle = 45, hjust = 1, size = 8),
+      legend.position = "bottom"
+    )
+}
+
+print(plot_ranks_compare(final_results_ranks, "Comparaison des Rangs : Statistiques W vs Z"))
