@@ -1,0 +1,154 @@
+# ==============================================================================
+# CODE COMPLET : COMPARARAISON BVS (Z) ET BVS+KO (W) 
+# 10 ITÉRATIONS - AFFICHAGE DANS LES TITRES DE FACETTES
+# ==============================================================================
+rm(list = ls()) 
+set.seed(123) 
+
+library(ggplot2)
+library(varbvs)
+library(glmnet)
+library(doParallel)
+library(foreach)
+library(dplyr)
+library(stringr)
+
+# 1. CHARGEMENT DES DONNÉES
+# ------------------------------------------------------------------------------
+chemin_fichier <- "C:/Users/axelC/Downloads/TRSANTEApo/dat_vst_NS_no_Inel_selected.txt"
+if (!file.exists(chemin_fichier)) stop("Fichier introuvable.")
+
+RNA.data <- read.table(file = chemin_fichier, head = TRUE) 
+X_real <- as.matrix(RNA.data)
+n <- nrow(X_real); p <- ncol(X_real)
+
+# 2. VOS FONCTIONS ORIGINALES
+# ------------------------------------------------------------------------------
+
+y.sample <- function(X, beta, method, scale = FALSE, threshold = 0.5){ 
+  n <- nrow(X); p <- ncol(X)
+  if (scale == TRUE){X = scale(X)}
+  if (method == "linear"){ 
+    y_prob <- 1 / (1 + exp(- (X%*%beta))) 
+    y <- 1*(y_prob>=threshold) 
+  } else if (method == "interaction"){ 
+    beta.ind <- which(beta!=0) 
+    X.part <- X[, sample(beta.ind)]
+    k <- length(beta.ind); amplitude <- abs(beta[beta.ind][1])
+    choice <- sample(c(1, -1), 1)
+    if (choice == 1) { vector <- c(rep(1, round(k/4)), rep(-1, k/2-round(k/4))) } 
+    else { vector <- c(rep(1, k/2-round(k/4)), rep(-1, round(k/4))) }
+    shuffled.vector <- sample(vector); coeff <- amplitude * shuffled.vector
+    int.product = 0
+    for (j in 1:(k/2)){ int.product <- int.product + coeff[j]*X.part[,2*j-1]*X.part[,2*j] }
+    y_prob <- 1 / (1 + exp(- int.product ))
+    y <- 1*(y_prob>=threshold)
+  }
+  return(y)
+}
+
+create.LSCIP_M_times <- function(X, M = 1){
+  p <- ncol(X); n <- nrow(X)
+  mat_residuals <- matrix(nrow = n, ncol = p)
+  mat_lasso_x <- matrix(nrow = n, ncol = p)
+  ncores <- as.numeric(Sys.getenv("SLURM_CPUS_PER_TASK"))
+  if (is.na(ncores) || ncores == 0) { ncores <- parallel::detectCores() }
+  cluster <- makeCluster(ncores - 1)
+  registerDoParallel(cluster)
+  result <- foreach(j = 1:p, .packages = c("glmnet")) %dopar% {
+    X_ <- X[,-j] |> as.matrix(); Xj <- X[, j]
+    modelj <- cv.glmnet(X_, Xj)
+    Xj_hat <- predict(modelj, s = modelj$lambda.min, newx = X_)
+    list(Xj - Xj_hat, Xj_hat)
+  }
+  stopCluster(cl = cluster)
+  for (j in 1:p) {
+    mat_residuals[, j] <- result[[j]][[1]]
+    mat_lasso_x[, j]   <- result[[j]][[2]]
+  }
+  list_KO <- list()
+  for (m in 1:M){
+    mat_shuffled_residuals <- apply(mat_residuals, 2, function(col) sample(col, replace = FALSE))
+    X_KO <- mat_lasso_x + mat_shuffled_residuals 
+    list_KO[[m]] <- X_KO |> as.data.frame()
+  }
+  if (M == 1){ return(list_KO[[1]]) } else { return(list_KO) }
+}
+
+beta.sample <- function(p, k, amplitude){
+  nonzero <- sample(p, k); beta <- rep(0, p)
+  beta[nonzero] <- amplitude * sample(c(1, -1), k, replace = TRUE) 
+  return(beta) 
+}
+
+# 3. BOUCLE DE SIMULATION (PASSAGE À 10 ITÉRATIONS)
+# ------------------------------------------------------------------------------
+X_ko <- as.matrix(create.LSCIP_M_times(X_real, M = 1))
+final_results <- data.frame()
+summary_counts <- data.frame() 
+
+for (i in 1:10) { # Modification : 10 itérations
+  cat("\nSimulation n°", i, "\n")
+  current_beta <- beta.sample(p, k = 10, amplitude = 3) 
+  y_curr <- y.sample(X_real, current_beta, method = "linear", scale = TRUE)
+  
+  if(length(unique(y_curr)) < 2) next 
+  
+  X_std <- scale(X_real)
+  Xaug_std <- scale(cbind(X_real, X_ko))
+  
+  # Exécution des modèles
+  fit_w <- varbvs(X = Xaug_std, Z = NULL, y = as.numeric(y_curr), family = "binomial", verbose = FALSE, maxiter = 100)
+  fit_z <- varbvs(X = X_std, Z = NULL, y = as.numeric(y_curr), family = "binomial", verbose = FALSE, maxiter = 100)
+  
+  w_vals <- fit_w$pip[1:p] - fit_w$pip[(p+1):(2*p)]
+  z_vals <- fit_z$pip
+  
+  # Comptage des gènes actifs (rouges) en haut (seuil > 0.99)
+  indices_actifs <- which(current_beta != 0)
+  count_z <- sum(z_vals[indices_actifs] > 0.99)
+  count_w <- sum(w_vals[indices_actifs] > 0.99)
+  
+  # Stockage des résultats
+  final_results <- rbind(final_results, 
+                         data.frame(Iteration = i, Valeur = w_vals, Type = "W (KO)", Etat = ifelse(current_beta == 0, "Nulle", "Active")),
+                         data.frame(Iteration = i, Valeur = z_vals, Type = "Z (Simple)", Etat = ifelse(current_beta == 0, "Nulle", "Active"))
+  )
+  
+  # Stockage des étiquettes de comptage
+  summary_counts <- rbind(summary_counts,
+                          data.frame(Iteration = i, Type = "W (KO)", Label = paste0("Actifs sélectionnés: ", count_w, "/10")),
+                          data.frame(Iteration = i, Type = "Z (Simple)", Label = paste0("Actifs sélectionnés: ", count_z, "/10"))
+  )
+}
+
+# 4. FONCTION D'AFFICHAGE OPTIMISÉE (DISPOSITION 2 COLONNES)
+# ------------------------------------------------------------------------------
+make_plot <- function(df, labels_df, type_name) {
+  
+  df_with_labels <- df %>%
+    filter(Type == type_name) %>%
+    left_join(subset(labels_df, Type == type_name), by = "Iteration") %>%
+    mutate(Facet_Title = paste0("Simulation ", Iteration, "\n(", Label, ")"))
+  
+  ggplot(df_with_labels, aes(x = 1, y = Valeur)) +
+    geom_jitter(aes(color = Etat), width = 0.1, alpha = 0.4, size = 1.2) +
+    scale_color_manual(values = c("Active" = "red", "Nulle" = "black")) +
+    # Passage en ncol = 2 pour que les 10 blocs soient lisibles
+    facet_wrap(~Facet_Title, ncol = 2, scales = "free_y") + 
+    ylim(-0.1, 1.1) + 
+    labs(title = paste("Statistique", type_name), 
+         y = "Score (PIP)",
+         subtitle = "") +
+    theme_light() + 
+    theme(
+      axis.text.x = element_blank(), 
+      axis.title.x = element_blank(),
+      strip.text = element_text(color = "firebrick", face = "bold", size = 9),
+      strip.background = element_rect(fill = "grey95")
+    )
+}
+
+# Affichage des deux graphiques
+print(make_plot(final_results, summary_counts, "W (KO)"))
+print(make_plot(final_results, summary_counts, "Z (Simple)"))
