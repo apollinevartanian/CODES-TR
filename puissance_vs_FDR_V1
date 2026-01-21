@@ -16,7 +16,7 @@ library(knockoff)
 
 # 1. PARAMÈTRES ET DONNÉES
 
-# Assurez-vous que ce chemin est correct sur la session R
+# chemin correct sur la session R
 chemin_fichier <- "C:/Users/axelC/Downloads/TRSANTEApo/dat_vst_NS_no_Inel_selected.txt"
 if (!file.exists(chemin_fichier)) stop("Fichier introuvable.")
 
