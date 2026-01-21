@@ -1,4 +1,5 @@
-# CODE ADAPTÉ : STYLE "PAPER" AVEC OMBRES ET POINTS
+# CODE puissance 
+
 rm(list = ls()) 
 set.seed(123) 
 
@@ -123,12 +124,12 @@ for (i in 1:n_sim) {
   }
 }
 
-# 5. GÉNÉRATION DES GRAPHES (STYLE PAPER)
+# 5. GÉNÉRATION DES GRAPHES 
 res_dfs <- df_perf_maker(table.perf.comp, list_target_fdr, c("BVS+KO", "LCD+KO"), n_sim)
 df_p <- res_dfs[[1]]; df_f <- res_dfs[[2]]; df_g3 <- res_dfs[[3]]
 colors_paper <- c("BVS+KO" = "#6050dc", "LCD+KO" = "#009E73")
 
-# Thème commun proche du code de Julie
+# 
 theme_paper <- theme_minimal() + theme(
   axis.text = element_text(size = 12, face = "bold"),
   axis.title = element_text(size = 14),
@@ -153,7 +154,7 @@ g2 <- ggplot(df_f, aes(x = target_fdr, y = fdp, color = Method)) +
   scale_color_manual(values = colors_paper) + scale_fill_manual(values = colors_paper) +
   labs(title = "FDP vs Target FDR", x = "Target FDR (q)", y = "FDP") + theme_paper
 
-# Graphe 3 : Power vs Observed FDP (Ombre + Ligne + Points)
+# Graphe 3 : Power vs Observed FDP 
 g3 <- ggplot(df_g3, aes(x = fdp, y = power, color = Method)) +
   geom_ribbon(aes(ymin = power - std, ymax = power + std, fill = Method), alpha = 0.15, color = NA) +
   geom_line(linewidth = 1.2) +
