@@ -1,4 +1,4 @@
-# HISTOS COMPARATIFS (RANGS W vs Z): W et Z sur le même graphe : code mis à jour 
+# HISTOS COMPARATIFS (RANGS W vs Z): W et Z sur le même graphe 
 
 #  1. CHARGEMENT DES BIBLIOTHÈQUES 
 library(knockoff)
@@ -10,7 +10,7 @@ library(foreach)
 library(doParallel)
 
 #  2. FONCTION  : LSCIP 
-#génère des Knockoffs basés sur les résidus du Lasso
+#génère des Knockoffs 
 create.LSCIP_M_times <- function(X, M = 1){
   p <- ncol(X); n <- nrow(X)
   mat_residuals <- matrix(nrow = n, ncol = p)
