@@ -1,7 +1,6 @@
-# ==============================================================================
+
 # CODE COMPLET : COMPARARAISON BVS (Z) ET BVS+KO (W) 
 # 10 ITÉRATIONS - AFFICHAGE DANS LES TITRES DE FACETTES
-# ==============================================================================
 rm(list = ls()) 
 set.seed(123) 
 
@@ -14,7 +13,6 @@ library(dplyr)
 library(stringr)
 
 # 1. CHARGEMENT DES DONNÉES
-# ------------------------------------------------------------------------------
 chemin_fichier <- "C:/Users/axelC/Downloads/TRSANTEApo/dat_vst_NS_no_Inel_selected.txt"
 if (!file.exists(chemin_fichier)) stop("Fichier introuvable.")
 
@@ -22,8 +20,8 @@ RNA.data <- read.table(file = chemin_fichier, head = TRUE)
 X_real <- as.matrix(RNA.data)
 n <- nrow(X_real); p <- ncol(X_real)
 
-# 2. VOS FONCTIONS ORIGINALES
-# ------------------------------------------------------------------------------
+# 2. FONCTIONS 
+# 
 
 y.sample <- function(X, beta, method, scale = FALSE, threshold = 0.5){ 
   n <- nrow(X); p <- ncol(X)
@@ -81,8 +79,7 @@ beta.sample <- function(p, k, amplitude){
   return(beta) 
 }
 
-# 3. BOUCLE DE SIMULATION (PASSAGE À 10 ITÉRATIONS)
-# ------------------------------------------------------------------------------
+# 3. BOUCLE DE SIMULATION (10 ITÉRATIONS)
 X_ko <- as.matrix(create.LSCIP_M_times(X_real, M = 1))
 final_results <- data.frame()
 summary_counts <- data.frame() 
@@ -122,8 +119,7 @@ for (i in 1:10) { # Modification : 10 itérations
   )
 }
 
-# 4. FONCTION D'AFFICHAGE OPTIMISÉE (DISPOSITION 2 COLONNES)
-# ------------------------------------------------------------------------------
+# 4. FONCTION D'AFFICHAGE 
 make_plot <- function(df, labels_df, type_name) {
   
   df_with_labels <- df %>%
