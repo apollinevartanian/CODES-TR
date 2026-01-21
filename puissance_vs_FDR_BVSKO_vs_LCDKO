@@ -102,7 +102,7 @@ df_perf_maker <- function(table.perf, list_fdr, stats_names, n.rep){
   return(list(df_p, df_f, df_g3_final))
 }
 
-# 4. BOUCLE DE SIMULATION (Inchangée)
+# 4. BOUCLE DE SIMULATION 
 cat("Calcul des Knockoffs LSCIP...\n")
 X_ko <- create.LSCIP_parallel(X_real)
 table.perf.comp <- matrix(0, nrow = 2, ncol = length(list_target_fdr) * 2 * n_sim)
