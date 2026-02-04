@@ -1,6 +1,4 @@
-################################################################################
-# COMPARISON: KO LCD VS KO DEBIASED LASSO (AVEC LSCIP)
-################################################################################
+# COMPARISON: KO LCD VS KO DEBIASED LASSO
 
 rm(list = ls()) 
 set.seed(123) 
@@ -14,7 +12,7 @@ library(tidyr)
 library(ggpubr)
 library(knockoff)
 
-# --- 1. PARAMÈTRES ET DONNÉES ---
+# 1. PARAMÈTRES ET DONNÉES 
 chemin_fichier <- "C:/Users/axelC/Downloads/TRSANTEApo/dat_vst_NS_no_Inel_selected.txt"
 if (!file.exists(chemin_fichier)) stop("Fichier introuvable.")
 
@@ -27,7 +25,7 @@ k_exp <- 10          # Nombre de signaux réels
 amplitude_exp <- 3.5   
 list_target_fdr <- seq(0.01, 1, length.out = 30)
 
-# --- 2. FONCTIONS DE SIMULATION ET MÉTRIQUES ---
+#  2. FONCTIONS DE SIMULATION ET MÉTRIQUES 
 
 beta.sample <- function(p, k, amplitude){ 
   nonzero <- sample(p, k); beta <- rep(0, p)
@@ -50,7 +48,7 @@ power_calc <- function(selected, beta_coeff) {
   return(length(which(beta_coeff[selected] != 0)) / length(which(beta_coeff != 0)))
 }
 
-# --- 3. GÉNÉRATION DES KNOCKOFFS LSCIP (PARALLÈLE) ---
+#  3. GÉNÉRATION DES KNOCKOFFS LSCIP (PARALLÈLE) 
 
 create.LSCIP_parallel <- function(X) {
   p <- ncol(X); n <- nrow(X)
@@ -68,7 +66,7 @@ create.LSCIP_parallel <- function(X) {
   return(mat_lasso_x + mat_residuals[, sample(p)]) 
 }
 
-# --- 4. STATISTIQUE KO DEBIASED LASSO ---
+#  4. STATISTIQUE KO DEBIASED LASSO 
 
 stat.ko_debiased <- function(X, X_ko, y) {
   X_aug <- scale(cbind(X, X_ko))
@@ -85,7 +83,7 @@ stat.ko_debiased <- function(X, X_ko, y) {
   neg_ddloglik <- t(X_int) %*% diag(mu * (1 - mu)) %*% X_int / nn
   C_mat <- sqrt(diag(mu * (1 - mu)) / nn) %*% X_int
   
-  # Nodewise Lasso pour Theta (Version stable issue de Xia et al.)
+  # Nodewise Lasso pour Theta 
   theta_mat <- diag(pp_aug + 1)
   tau_vec <- rep(NA, pp_aug + 1)
   for(j in 1:(pp_aug + 1)) {
@@ -104,7 +102,7 @@ stat.ko_debiased <- function(X, X_ko, y) {
   return(W)
 }
 
-# --- 5. FONCTION DE MISE EN FORME (AVEC SÉCURITÉ APPROX) ---
+#  5. FONCTION DE MISE EN FORME
 
 df_perf_maker <- function(table.perf, list_fdr, stats_names, n.rep){
   n.stats <- length(stats_names); len_fdr <- length(list_fdr)
@@ -142,7 +140,7 @@ df_perf_maker <- function(table.perf, list_fdr, stats_names, n.rep){
   return(list(df_p, df_f, df_g3_final))
 }
 
-# --- 6. BOUCLE DE SIMULATION PRINCIPALE ---
+#  6. BOUCLE DE SIMULATION 
 
 cat("Génération des Knockoffs LSCIP...\n")
 X_ko_lscip <- create.LSCIP_parallel(X_real)
@@ -174,7 +172,7 @@ for (i in 1:n_sim) {
   }
 }
 
-# --- 7. GÉNÉRATION DES GRAPHES (STYLE PAPER) ---
+# 7. GÉNÉRATION DES GRAPHES
 
 res_dfs <- df_perf_maker(table.perf.comp, list_target_fdr, c("KO LCD", "KO Debiased"), n_sim)
 df_p <- res_dfs[[1]]; df_f <- res_dfs[[2]]; df_g3 <- res_dfs[[3]]
