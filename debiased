@@ -1,0 +1,222 @@
+################################################################################
+# COMPARISON: KO LCD VS KO DEBIASED P-VALUES (LSCIP)
+################################################################################
+
+rm(list = ls()) 
+set.seed(123) 
+
+library(ggplot2)
+library(glmnet)
+library(doParallel)
+library(foreach)
+library(dplyr)
+library(tidyr)
+library(ggpubr)
+library(knockoff)
+
+# --- 1. PARAMÈTRES ET DONNÉES ---
+# Remplace par ton chemin local si nécessaire
+chemin_fichier <- "C:/Users/axelC/Downloads/TRSANTEApo/dat_vst_NS_no_Inel_selected.txt"
+if (!file.exists(chemin_fichier)) stop("Fichier introuvable.")
+
+RNA.data <- read.table(file = chemin_fichier, head = TRUE) 
+X_real <- as.matrix(RNA.data)
+n <- nrow(X_real); p <- ncol(X_real)
+
+n_sim <- 100          # Nombre de simulations
+k_exp <- 10           # Nombre de signaux réels
+amplitude_exp <- 3.5   
+list_target_fdr <- seq(0.01, 1, length.out = 30)
+
+# --- 2. FONCTIONS DE SIMULATION ET MÉTRIQUES ---
+
+beta.sample <- function(p, k, amplitude){ 
+  nonzero <- sample(p, k); beta <- rep(0, p)
+  beta[nonzero] <- amplitude * sample(c(1, -1), k, replace = TRUE) 
+  return(beta) 
+}
+
+y.sample <- function(X, beta, threshold = 0.5){ 
+  # Calcul probabilité logistique
+  linear_pred <- scale(X) %*% beta
+  y_prob <- 1 / (1 + exp(-linear_pred)) 
+  return(as.numeric(y_prob >= threshold))
+}
+
+fdp_calc <- function(selected, beta_coeff) {
+  if (length(selected) == 0) return(0)
+  return(sum(beta_coeff[selected] == 0) / length(selected))
+}
+
+power_calc <- function(selected, beta_coeff) {
+  if (sum(beta_coeff != 0) == 0) return(0)
+  return(length(which(beta_coeff[selected] != 0)) / length(which(beta_coeff != 0)))
+}
+
+# --- 3. GÉNÉRATION DES KNOCKOFFS LSCIP (PARALLÈLE) ---
+
+create.LSCIP_parallel <- function(X) {
+  p <- ncol(X); n <- nrow(X)
+  ncores <- parallel::detectCores() - 1
+  cl <- parallel::makeCluster(ncores); doParallel::registerDoParallel(cl)
+  result <- foreach(j = 1:p, .packages = c("glmnet")) %dopar% {
+    y = X[, j]; X_ = X[, -j]
+    modelj <- glmnet::cv.glmnet(X_, y); betaj <- as.matrix(coef(modelj, s = "lambda.min"))
+    X_j <- cbind(rep(1, n), X_); residuals_j = y - X_j %*% betaj
+    lasso_x_j = X_j %*% betaj
+    list(residuals_j, lasso_x_j)
+  }
+  parallel::stopCluster(cl)
+  mat_residuals <- sapply(result, `[[`, 1); mat_lasso_x <- sapply(result, `[[`, 2)
+  return(mat_lasso_x + mat_residuals[, sample(p)]) 
+}
+
+# --- 4. STATISTIQUE KO DEBIASED P-VALUES ---
+
+stat.ko_debiased_pval <- function(X, X_ko, y) {
+  X_aug <- scale(cbind(X, X_ko))
+  nn <- length(y); pp_aug <- ncol(X_aug)
+  p_orig <- pp_aug / 2
+  
+  # 1. Lasso initial
+  cvobj <- cv.glmnet(x=X_aug, y=y, family="binomial", standardize=F, intercept=T)
+  beta_lasso <- as.vector(coef(glmnet(x=X_aug, y=y, family="binomial", standardize=F, intercept=T), s=cvobj$lambda.min))
+  
+  # 2. Calcul des poids mu et matrice de précision via Nodewise Lasso
+  X_int <- cbind(1, X_aug)
+  mu <- as.vector(1 / (1 + exp(-X_int %*% beta_lasso)))
+  neg_ddloglik <- t(X_int) %*% diag(mu * (1 - mu)) %*% X_int / nn
+  
+  theta_mat <- diag(pp_aug + 1)
+  C_mat <- sqrt(diag(mu * (1 - mu)) / nn) %*% X_int
+  
+  for(j in 1:(pp_aug + 1)) {
+    cur_x <- sqrt(nn) * C_mat[, -j]; cur_y <- sqrt(nn) * as.vector(C_mat[, j])
+    # Lambda fixé à 0.01 pour la stabilité du nodewise
+    fit_node <- glmnet(x=cur_x, y=cur_y, family="gaussian", alpha=1, standardize=F, intercept=F, lambda = 0.01)
+    theta_mat[j, -j] <- -as.vector(fit_node$beta)
+  }
+  
+  # 3. Débiaisement et calcul Z-score -> P-valeur
+  neg_dloglik <- -as.vector(t(X_int) %*% (y - mu)) / nn
+  b_deb <- as.vector(beta_lasso - theta_mat %*% neg_dloglik)
+  
+  sigma_mat <- (theta_mat %*% neg_ddloglik %*% t(theta_mat)) / nn
+  std_err <- sqrt(diag(sigma_mat))
+  
+  z_scores <- b_deb / std_err
+  p_vals_all <- 2 * (1 - pnorm(abs(z_scores)))
+  p_vals <- p_vals_all[-1] # On retire l'intercept
+  
+  # 4. Statistique W : (P_knockoff - P_original)
+  # Plus P_original est petit par rapport à son knockoff, plus W est grand/positif.
+  p_orig_val <- p_vals[1:p_orig]
+  p_ko_val   <- p_vals[(p_orig+1):pp_aug]
+  
+  W <- p_ko_val - p_orig_val
+  return(W)
+}
+
+# --- 5. FONCTION DE MISE EN FORME ---
+
+df_perf_maker <- function(table.perf, list_fdr, stats_names, n.rep){
+  n.stats <- length(stats_names); len_fdr <- length(list_fdr)
+  df_p <- data.frame(power=NA, target_fdr=rep(list_fdr, n.stats), std=NA, Method=rep(stats_names, each=len_fdr))
+  df_f <- data.frame(fdp=NA, target_fdr=rep(list_fdr, n.stats), std=NA, Method=rep(stats_names, each=len_fdr))
+  raw_list <- list()
+  
+  for (i in 1:n.stats){
+    list_FDP_perf <- as.numeric(table.perf[1, seq(i, ncol(table.perf), n.stats)])
+    list_power_perf <- as.numeric(table.perf[2, seq(i, ncol(table.perf), n.stats)])
+    raw_list[[stats_names[i]]] <- data.frame(fdp = list_FDP_perf, power = list_power_perf)
+    for (j in 1:len_fdr){
+      idx_range <- seq(j, length(list_power_perf), len_fdr)
+      df_p$power[(i-1)*len_fdr + j] <- mean(list_power_perf[idx_range], na.rm=T)
+      df_f$fdp[(i-1)*len_fdr + j]   <- mean(list_FDP_perf[idx_range], na.rm=T)
+      df_p$std[(i-1)*len_fdr + j]   <- sd(list_power_perf[idx_range], na.rm=T) 
+      df_f$std[(i-1)*len_fdr + j]   <- sd(list_FDP_perf[idx_range], na.rm=T)
+    }
+  }
+  
+  fdp_grid <- seq(0, 1, length.out = 100); df_g3_final <- data.frame()
+  for (name in stats_names) {
+    d <- raw_list[[name]]
+    interp_matrix <- sapply(1:n.rep, function(r) {
+      idx <- ((r-1)*len_fdr + 1):(r*len_fdr)
+      x_vals <- d$fdp[idx]; y_vals <- d$power[idx]
+      if(length(unique(x_vals)) < 2) return(rep(mean(y_vals), length(fdp_grid)))
+      approx(x_vals, y_vals, xout = fdp_grid, rule = 2, ties = mean)$y
+    })
+    df_g3_final <- rbind(df_g3_final, data.frame(
+      fdp = fdp_grid, power = rowMeans(interp_matrix, na.rm = TRUE),
+      std = apply(interp_matrix, 1, sd, na.rm = TRUE), Method = name
+    ))
+  }
+  return(list(df_p, df_f, df_g3_final))
+}
+
+# --- 6. BOUCLE DE SIMULATION PRINCIPALE ---
+
+cat("Génération des Knockoffs LSCIP...\n")
+X_ko_lscip <- create.LSCIP_parallel(X_real)
+
+# On stocke les résultats pour LCD et Debiased P-values
+table.perf.comp <- matrix(0, nrow = 2, ncol = length(list_target_fdr) * 2 * n_sim)
+
+for (i in 1:n_sim) {
+  cat("Simulation n°", i, "/", n_sim, "\n")
+  current_beta <- beta.sample(p, k_exp, amplitude_exp)
+  y_curr <- y.sample(X_real, current_beta)
+  
+  # Calcul des statistiques W
+  # 1. LCD classique (Beta)
+  stat_lcd <- stat.glmnet_coefdiff(X_real, X_ko_lscip, y_curr, family = "binomial")
+  # 2. Debiased P-values (Celle que l'on vient de modifier)
+  stat_deb <- stat.ko_debiased_pval(X_real, X_ko_lscip, y_curr)
+  
+  for (j in 1:length(list_target_fdr)) {
+    q <- list_target_fdr[j]
+    
+    sel_lcd <- which(stat_lcd >= knockoff.threshold(stat_lcd, fdr = q))
+    sel_deb <- which(stat_deb >= knockoff.threshold(stat_deb, fdr = q))
+    
+    col_idx_lcd <- (i-1)*length(list_target_fdr)*2 + (j-1)*2 + 1
+    col_idx_deb <- (i-1)*length(list_target_fdr)*2 + (j-1)*2 + 2
+    
+    table.perf.comp[1, col_idx_lcd] <- fdp_calc(sel_lcd, current_beta)
+    table.perf.comp[2, col_idx_lcd] <- power_calc(sel_lcd, current_beta)
+    table.perf.comp[1, col_idx_deb] <- fdp_calc(sel_deb, current_beta)
+    table.perf.comp[2, col_idx_deb] <- power_calc(sel_deb, current_beta)
+  }
+}
+
+# --- 7. GÉNÉRATION DES GRAPHES ---
+
+res_dfs <- df_perf_maker(table.perf.comp, list_target_fdr, c("KO LCD", "KO Debiased P-val"), n_sim)
+df_p <- res_dfs[[1]]; df_f <- res_dfs[[2]]; df_g3 <- res_dfs[[3]]
+colors_paper <- c("KO LCD" = "#D55E00", "KO Debiased P-val" = "#0072B2")
+
+theme_paper <- theme_minimal() + theme(
+  axis.text = element_text(size = 12, face = "bold"),
+  panel.background = element_rect(fill = "#F6F6F6", color = NA),
+  panel.grid.major = element_line(color = "white")
+)
+
+g1 <- ggplot(df_p, aes(x = target_fdr, y = power, color = Method)) +
+  geom_ribbon(aes(ymin = power - std, ymax = power + std, fill = Method), alpha = 0.15, color = NA) +
+  geom_line(linewidth = 1.2) + labs(title="Power vs Target FDR", x="Target FDR (q)", y="Power") +
+  scale_color_manual(values = colors_paper) + scale_fill_manual(values = colors_paper) + theme_paper
+
+g2 <- ggplot(df_f, aes(x = target_fdr, y = fdp, color = Method)) +
+  geom_ribbon(aes(ymin = fdp - std, ymax = fdp + std, fill = Method), alpha = 0.15, color = NA) +
+  geom_line(linewidth = 1.2) + geom_abline(slope = 1, linetype = "dashed") +
+  labs(title="FDP vs Target FDR", x="Target FDR (q)", y="FDP") +
+  scale_color_manual(values = colors_paper) + scale_fill_manual(values = colors_paper) + theme_paper
+
+g3 <- ggplot(df_g3, aes(x = fdp, y = power, color = Method)) +
+  geom_ribbon(aes(ymin = power - std, ymax = power + std, fill = Method), alpha = 0.15, color = NA) +
+  geom_line(linewidth = 1.2) + 
+  labs(title="Power vs FDP", x="FDP", y="Power") +
+  scale_color_manual(values = colors_paper) + scale_fill_manual(values = colors_paper) + theme_paper
+
+ggarrange(g1, g2, g3, ncol = 1, common.legend = TRUE, legend = "right")
