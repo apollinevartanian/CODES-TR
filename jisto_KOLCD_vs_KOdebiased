@@ -1,0 +1,184 @@
+# COMPARISON: KO LCD VS KO DEBIASED LASSO 
+
+
+rm(list = ls()) 
+set.seed(123) 
+
+library(ggplot2)
+library(glmnet)
+library(doParallel)
+library(foreach)
+library(dplyr)
+library(tidyr)
+library(ggpubr)
+library(knockoff)
+
+# --- 1. PARAMÈTRES ET DONNÉES ---
+chemin_fichier <- "C:/Users/axelC/Downloads/TRSANTEApo/dat_vst_NS_no_Inel_selected.txt"
+if (!file.exists(chemin_fichier)) stop("Fichier introuvable.")
+
+RNA.data <- read.table(file = chemin_fichier, head = TRUE) 
+X_real <- as.matrix(RNA.data)
+n <- nrow(X_real); p <- ncol(X_real)
+
+n_sim <- 100           
+k_exp <- 10            
+amplitude_exp <- 3.5   
+list_target_fdr <- seq(0.01, 1, length.out = 30) 
+
+# --- 2. FONCTIONS DE SIMULATION ET MÉTRIQUES ---
+
+beta.sample <- function(p, k, amplitude){ 
+  nonzero <- sample(p, k); beta <- rep(0, p)
+  beta[nonzero] <- amplitude * sample(c(1, -1), k, replace = TRUE) 
+  return(beta) 
+}
+
+y.sample <- function(X, beta, threshold = 0.5){ 
+  y_prob <- 1 / (1 + exp(- (scale(X) %*% beta))) 
+  return(as.numeric(y_prob >= threshold))
+}
+
+fdp_calc <- function(selected, beta_coeff) {
+  if (length(selected) == 0) return(0)
+  return(sum(beta_coeff[selected] == 0) / length(selected))
+}
+
+power_calc <- function(selected, beta_coeff) {
+  if (sum(beta_coeff != 0) == 0) return(0)
+  return(length(which(beta_coeff[selected] != 0)) / length(which(beta_coeff != 0)))
+}
+
+create.LSCIP_parallel <- function(X) {
+  p <- ncol(X); n <- nrow(X)
+  ncores <- parallel::detectCores() - 1
+  cl <- parallel::makeCluster(ncores); doParallel::registerDoParallel(cl)
+  result <- foreach(j = 1:p, .packages = c("glmnet")) %dopar% {
+    y = X[, j]; X_ = X[, -j]
+    modelj <- glmnet::cv.glmnet(X_, y); betaj <- as.matrix(coef(modelj, s = "lambda.min"))
+    X_j <- cbind(rep(1, n), X_); residuals_j = y - X_j %*% betaj
+    lasso_x_j = X_j %*% betaj
+    list(residuals_j, lasso_x_j)
+  }
+  parallel::stopCluster(cl)
+  mat_residuals <- sapply(result, `[[`, 1); mat_lasso_x <- sapply(result, `[[`, 2)
+  return(mat_lasso_x + mat_residuals[, sample(p)]) 
+}
+
+# --- 3. STATISTIQUE KO DEBIASED LASSO ---
+
+stat.ko_debiased <- function(X, X_ko, y) {
+  X_aug <- scale(cbind(X, X_ko))
+  nn <- length(y); pp_aug <- ncol(X_aug); p_orig <- pp_aug / 2
+  
+  cvobj <- cv.glmnet(x=X_aug, y=y, family="binomial", standardize=F, intercept=T)
+  beta_lasso <- as.vector(coef(glmnet(x=X_aug, y=y, family="binomial", standardize=F, intercept=T), s=cvobj$lambda.min))
+  
+  X_int <- cbind(1, X_aug)
+  mu <- as.vector(exp(X_int %*% beta_lasso)/(1 + exp(X_int %*% beta_lasso)))
+  neg_dloglik <- -as.vector(t(X_int) %*% (y - mu)) / nn
+  neg_ddloglik <- t(X_int) %*% diag(mu * (1 - mu)) %*% X_int / nn
+  C_mat <- sqrt(diag(mu * (1 - mu)) / nn) %*% X_int
+  
+  theta_mat <- diag(pp_aug + 1)
+  tau_vec <- rep(NA, pp_aug + 1)
+  for(j in 1:(pp_aug + 1)) {
+    cur_x <- sqrt(nn) * C_mat[, -j]; cur_y <- sqrt(nn) * as.vector(C_mat[, j])
+    fit_node <- glmnet(x=cur_x, y=cur_y, family="gaussian", alpha=1, standardize=F, intercept=F, lambda = 0.01)
+    gamma_j <- as.vector(fit_node$beta)
+    theta_mat[j, -j] <- -gamma_j
+    tau_vec[j] <- as.numeric(neg_ddloglik[j, j] - neg_ddloglik[j, -j] %*% gamma_j)
+  }
+  theta_mat <- diag(1 / tau_vec) %*% theta_mat 
+  b_deb <- as.vector(beta_lasso - theta_mat %*% neg_dloglik)[-1] 
+  return(abs(b_deb[1:p_orig]) - abs(b_deb[(p_orig+1):pp_aug]))
+}
+
+# --- 4. FONCTION DE MISE EN FORME ---
+
+df_perf_maker_combined <- function(table.perf, stats_names, n_bins = 10){
+  df_raw <- data.frame(
+    fdp = as.numeric(table.perf[1,]), 
+    power = as.numeric(table.perf[2,]),
+    Method = rep(stats_names, length.out = ncol(table.perf))
+  )
+  
+  df_summarized <- df_raw %>%
+    group_by(Method) %>%
+    mutate(fdp_bin = cut(fdp, breaks = seq(0, 1, length.out = n_bins + 1), 
+                         include.lowest = TRUE, labels = FALSE)) %>%
+    group_by(Method, fdp_bin) %>%
+    summarise(
+      mean_fdp = mean(fdp),
+      mean_power = mean(power),
+      sd_power = sd(power),
+      .groups = "drop"
+    ) %>%
+    filter(!is.na(mean_power)) 
+  
+  return(list(df_summarized, df_raw))
+}
+
+# --- 5. BOUCLE DE SIMULATION ---
+
+cat("Génération des Knockoffs LSCIP...\n")
+X_ko <- create.LSCIP_parallel(X_real)
+
+table.perf.comp <- matrix(0, nrow = 2, ncol = length(list_target_fdr) * 2 * n_sim)
+
+for (i in 1:n_sim) {
+  cat("Simulation n°", i, "/", n_sim, "\r")
+  current_beta <- beta.sample(p, k_exp, amplitude_exp)
+  y_curr <- y.sample(X_real, current_beta)
+  
+  stat_lcd <- stat.glmnet_coefdiff(X_real, X_ko, y_curr, family = "binomial")
+  stat_deb <- stat.ko_debiased(X_real, X_ko, y_curr)
+  
+  for (j in 1:length(list_target_fdr)) {
+    q <- list_target_fdr[j]
+    sel_lcd <- which(stat_lcd >= knockoff.threshold(stat_lcd, fdr = q))
+    sel_deb <- which(stat_deb >= knockoff.threshold(stat_deb, fdr = q))
+    
+    idx_lcd <- (i-1)*length(list_target_fdr)*2 + (j-1)*2 + 1
+    idx_deb <- (i-1)*length(list_target_fdr)*2 + (j-1)*2 + 2
+    
+    table.perf.comp[1, idx_lcd] <- fdp_calc(sel_lcd, current_beta)
+    table.perf.comp[2, idx_lcd] <- power_calc(sel_lcd, current_beta)
+    table.perf.comp[1, idx_deb] <- fdp_calc(sel_deb, current_beta)
+    table.perf.comp[2, idx_deb] <- power_calc(sel_deb, current_beta)
+  }
+}
+
+# --- 6. VISUALISATION (VERT & ORANGE) ---
+
+res_dfs <- df_perf_maker_combined(table.perf.comp, c("KO LCD", "KO Debiased"), n_bins = 10)
+df_bins <- res_dfs[[1]]; df_raw <- res_dfs[[2]]
+
+# Palette : Vert pour LCD, Orange pour Debiased
+colors_paper <- c("KO LCD" = "#009E73", "KO Debiased" = "#D55E00")
+
+# Graphe du haut : Histogrammes (position dodge)
+g_hist <- ggplot(df_raw, aes(x = fdp, fill = Method)) +
+  geom_histogram(bins = 10, alpha = 0.8, position = "dodge", color = "white") +
+  scale_fill_manual(values = colors_paper) +
+  labs(title = paste(" "), x = "", y = "Count") +
+  theme_minimal() +
+  theme(axis.text.x = element_blank(), axis.ticks.x = element_blank())
+
+# Graphe du bas : Courbe Puissance vs FDP (points fins)
+g_main <- ggplot(df_bins, aes(x = mean_fdp, y = mean_power, color = Method, fill = Method)) +
+  geom_ribbon(aes(ymin = mean_power - sd_power, ymax = mean_power + sd_power), 
+              alpha = 0.15, color = NA) +
+  geom_line(linewidth = 1) +
+  geom_point(size = 1.5, stroke = 0.5) +
+  scale_color_manual(values = colors_paper) +
+  scale_fill_manual(values = colors_paper) +
+  labs(x = "FDP", y = "Power (mean)") +
+  theme_minimal() +
+  theme(legend.position = "bottom", 
+        axis.title = element_text(face = "bold"),
+        axis.text = element_text(size = 10))
+
+# Assemblage Final
+ggarrange(g_hist, g_main, ncol = 1, heights = c(1, 2), 
+          common.legend = TRUE, legend = "right", align = "v")
