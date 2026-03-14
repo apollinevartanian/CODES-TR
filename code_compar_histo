@@ -1,4 +1,4 @@
-# HISTOS COMPARATIFS (RANGS W vs Z): W et Z sur le même graphe 
+# HISTOS COMPARATIFS (RANGS W vs Z)
 
 #  1. CHARGEMENT DES BIBLIOTHÈQUES 
 library(knockoff)
