@@ -1,0 +1,153 @@
+################################################################################
+# COMPARISON: BVS VS BVS+KO (HISTOGRAMME DODGE)
+################################################################################
+
+rm(list = ls()) 
+set.seed(123) 
+
+library(ggplot2)
+library(varbvs)
+library(glmnet)
+library(doParallel)
+library(foreach)
+library(dplyr)
+library(tidyr)
+library(ggpubr)
+library(knockoff)
+
+# 1. PARAMÈTRES ET DONNÉES
+chemin_fichier <- "C:/Users/axelC/Downloads/TRSANTEApo/dat_vst_NS_no_Inel_selected.txt"
+if (!file.exists(chemin_fichier)) stop("Fichier introuvable.")
+
+RNA.data <- read.table(file = chemin_fichier, head = TRUE) 
+X_real <- as.matrix(RNA.data)
+n <- nrow(X_real); p <- ncol(X_real)
+
+n_sim <- 100          
+k_exp <- 10           
+amplitude_exp <- 3    
+list_target_fdr <- seq(0.01, 1, length.out = 30) 
+
+# 2. FONCTIONS DE SIMULATION ET DE PERFORMANCE 
+beta.sample <- function(p, k, amplitude){ 
+  nonzero <- sample(p, k); beta <- rep(0, p)
+  beta[nonzero] <- amplitude * sample(c(1, -1), k, replace = TRUE) 
+  return(beta) 
+}
+
+y.sample <- function(X, beta, method, scale = FALSE, threshold = 0.5){ 
+  if (scale == TRUE){X = scale(X)}
+  if (method == "linear"){ 
+    y_prob <- 1 / (1 + exp(- (X%*%beta))) 
+    y <- 1*(y_prob>=threshold) 
+  }
+  return(y)
+}
+
+fdp_calc <- function(selected, beta_coeff) {
+  return(sum(beta_coeff[selected] == 0) / max(1, length(selected)))
+}
+
+power_calc <- function(selected, beta_coeff) {
+  return(length(which(beta_coeff[selected] != 0)) / max(1, length(which(beta_coeff != 0))))
+}
+
+create.LSCIP_parallel <- function(X) {
+  p <- ncol(X); n <- nrow(X)
+  ncores <- parallel::detectCores() - 1
+  cl <- parallel::makeCluster(ncores); doParallel::registerDoParallel(cl)
+  result <- foreach(j = 1:p, .packages = c("glmnet")) %dopar% {
+    y = X[, j]; X_ = X[, -j]
+    modelj <- cv.glmnet(X_, y); betaj <- as.matrix(coef(modelj, s = "lambda.min"))
+    X_j <- cbind(rep(1, n), X_); residuals_j = y - X_j %*% betaj
+    lasso_x_j = X_j %*% betaj
+    list(residuals_j, lasso_x_j)
+  }
+  parallel::stopCluster(cl)
+  mat_residuals <- sapply(result, `[[`, 1); mat_lasso_x <- sapply(result, `[[`, 2)
+  return(mat_lasso_x + mat_residuals[, sample(p)]) 
+}
+
+# 3. FONCTION DE MISE EN FORME
+df_perf_maker_by_fdp_bins <- function(table.perf, stats_names, n_bins = 10){
+  df_raw <- data.frame(
+    fdp = as.numeric(table.perf[1,]), 
+    power = as.numeric(table.perf[2,]),
+    Method = rep(stats_names, length.out = ncol(table.perf))
+  )
+  
+  df_summarized <- df_raw %>%
+    group_by(Method) %>%
+    mutate(fdp_bin = cut(fdp, breaks = seq(0, 1, length.out = n_bins + 1), 
+                         include.lowest = TRUE, labels = FALSE)) %>%
+    group_by(Method, fdp_bin) %>%
+    summarise(
+      mean_fdp = mean(fdp),
+      mean_power = mean(power),
+      sd_power = sd(power),
+      .groups = "drop"
+    ) %>%
+    filter(!is.na(mean_power)) 
+  
+  return(list(df_summarized, df_raw))
+}
+
+# 4. BOUCLE DE SIMULATION
+cat("Calcul des Knockoffs LSCIP...\n")
+X_ko <- create.LSCIP_parallel(X_real)
+table.perf.comp <- matrix(0, nrow = 2, ncol = length(list_target_fdr) * 2 * n_sim)
+
+for (i in 1:n_sim) {
+  cat("Simulation n°", i, "/", n_sim, "\r")
+  current_beta <- beta.sample(p, k_exp, amplitude_exp)
+  y_curr <- y.sample(X_real, current_beta, method = "linear", scale = TRUE)
+  
+  fit_simple <- varbvs(X = scale(X_real), Z = NULL, y = as.numeric(y_curr), family = "binomial", verbose = FALSE)
+  fit_ko <- varbvs(X = scale(cbind(X_real, X_ko)), Z = NULL, y = as.numeric(y_curr), family = "binomial", verbose = FALSE)
+  
+  stat_w <- fit_ko$pip[1:p] - fit_ko$pip[(p+1):(2*p)]
+  pip_sorted_idx <- order(fit_simple$pip, decreasing = TRUE)
+  fdr_cumule <- cumsum(1 - fit_simple$pip[pip_sorted_idx]) / seq_along(pip_sorted_idx)
+  
+  for (j in 1:length(list_target_fdr)) {
+    q <- list_target_fdr[j]
+    count_simple <- sum(fdr_cumule <= q); sel_simple <- if(count_simple > 0) pip_sorted_idx[1:count_simple] else integer(0)
+    thres_w <- knockoff.threshold(stat_w, fdr = q, offset = 1); sel_ko <- which(stat_w >= thres_w)
+    
+    col_idx_s <- (i-1)*length(list_target_fdr)*2 + (j-1)*2 + 1
+    col_idx_k <- (i-1)*length(list_target_fdr)*2 + (j-1)*2 + 2
+    
+    table.perf.comp[1, col_idx_s] <- fdp_calc(sel_simple, current_beta)
+    table.perf.comp[2, col_idx_s] <- power_calc(sel_simple, current_beta)
+    table.perf.comp[1, col_idx_k] <- fdp_calc(sel_ko, current_beta)
+    table.perf.comp[2, col_idx_k] <- power_calc(sel_ko, current_beta)
+  }
+}
+
+# 5. GÉNÉRATION DU GRAPHE - VERSION HISTOGRAMME CÔTE À CÔTE
+res_dfs <- df_perf_maker_by_fdp_bins(table.perf.comp, c("BVS", "BVS+KO"), n_bins = 10)
+df_bins <- res_dfs[[1]]; df_raw <- res_dfs[[2]]
+colors_paper <- c("BVS" = "#993300", "BVS+KO" = "#6050dc")
+
+# Graphe A : Histogramme (MODIFICATION position = "dodge")
+g_hist <- ggplot(df_raw, aes(x = fdp, fill = Method)) +
+  geom_histogram(bins = 10, position = "dodge", alpha = 1, color = "white") +
+  scale_fill_manual(values = colors_paper) +
+  labs(title = paste(" "), x = "", y = "Count") +
+  theme_minimal() +
+  theme(axis.text.x = element_blank(), axis.ticks.x = element_blank())
+
+# Graphe B : Courbe
+g_main <- ggplot(df_bins, aes(x = mean_fdp, y = mean_power, color = Method, fill = Method)) +
+  geom_ribbon(aes(ymin = mean_power - sd_power, ymax = mean_power + sd_power), 
+              alpha = 0.15, color = NA) +
+  geom_line(linewidth = 1) +
+  geom_point(size = 1.5) + 
+  scale_color_manual(values = colors_paper) +
+  scale_fill_manual(values = colors_paper) +
+  labs(x = "FDP", y = "Power (mean)") +
+  theme_minimal()
+
+# Assemblage
+ggarrange(g_hist, g_main, ncol = 1, heights = c(1, 2), 
+          common.legend = TRUE, legend = "right", align = "v")
