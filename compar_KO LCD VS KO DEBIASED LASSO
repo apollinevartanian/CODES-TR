@@ -48,7 +48,7 @@ power_calc <- function(selected, beta_coeff) {
   return(length(which(beta_coeff[selected] != 0)) / length(which(beta_coeff != 0)))
 }
 
-#  3. GÉNÉRATION DES KNOCKOFFS LSCIP (PARALLÈLE) 
+#  3. GÉNÉRATION DES KNOCKOFFS LSCIP 
 
 create.LSCIP_parallel <- function(X) {
   p <- ncol(X); n <- nrow(X)
