@@ -20,8 +20,8 @@ RNA.data <- read.table(file = chemin_fichier, head = TRUE)
 X_real <- as.matrix(RNA.data)
 n <- nrow(X_real); p <- ncol(X_real)
 
-n_sim <- 100          # Nombre de simulations
-k_exp <- 10          # Nombre de signaux réels
+n_sim <- 100          
+k_exp <- 10         
 amplitude_exp <- 3.5   
 list_target_fdr <- seq(0.01, 1, length.out = 30)
 
