@@ -1,5 +1,5 @@
 
-# CODE : EVALUATION BVS vs BVS+KO : avec 3 graphes de comparaison 
+# EVALUATION BVS vs BVS+KO :
 
 rm(list = ls()) 
 set.seed(123) 
@@ -24,10 +24,10 @@ RNA.data <- read.table(file = chemin_fichier, head = TRUE)
 X_real <- as.matrix(RNA.data)
 n <- nrow(X_real); p <- ncol(X_real)
 
-n_sim <- 20          # Nombre de répétitions 
-k_exp <- 10          # Nombre de gènes actifs
+n_sim <- 20          
+k_exp <- 10          
 amplitude_exp <- 3   
-list_target_fdr <- seq(0.01, 1, length.out = 30) # Grille de Target FDR (Axe X)
+list_target_fdr <- seq(0.01, 1, length.out = 30) 
 
 # 2.FONCTIONS DE SIMULATION ET LES FONCTIONS DE CALCUL
 
