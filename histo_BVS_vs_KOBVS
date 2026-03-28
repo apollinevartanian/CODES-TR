@@ -122,12 +122,12 @@ for (i in 1:n_sim) {
   }
 }
 
-# 5. GÉNÉRATION DU GRAPHE - VERSION HISTOGRAMME CÔTE À CÔTE
+# 5. GÉNÉRATION DU GRAPHE 
 res_dfs <- df_perf_maker_by_fdp_bins(table.perf.comp, c("BVS", "BVS+KO"), n_bins = 10)
 df_bins <- res_dfs[[1]]; df_raw <- res_dfs[[2]]
 colors_paper <- c("BVS" = "#993300", "BVS+KO" = "#6050dc")
 
-# Graphe A : Histogramme (MODIFICATION position = "dodge")
+# Graphe A : Histogramme 
 g_hist <- ggplot(df_raw, aes(x = fdp, fill = Method)) +
   geom_histogram(bins = 10, position = "dodge", alpha = 1, color = "white") +
   scale_fill_manual(values = colors_paper) +
