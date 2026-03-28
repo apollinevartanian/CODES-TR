@@ -1,5 +1,5 @@
 
-# CODE COMPLET : COMPARAISON BVS (LOCAL FDR) vs BVS+KO : méthode de séléction collective de FDR cumulé
+# COMPARAISON BVS vs BVS+KO : FDR cumulé
 
 rm(list = ls()) 
 set.seed(123) 
@@ -23,10 +23,10 @@ RNA.data <- read.table(file = chemin_fichier, head = TRUE)
 X_real <- as.matrix(RNA.data)
 n <- nrow(X_real); p <- ncol(X_real)
 
-n_sim <- 20          # Nombre de répétitions pour les barres d'erreur
-k_exp <- 10          # Nombre de gènes réellement actifs
-amplitude_exp <- 3   # Force du signal
-list_target_fdr <- seq(0.01, 1, length.out = 30) # Grille de Target FDR (axe X)
+n_sim <- 20          
+k_exp <- 10          
+amplitude_exp <- 3  
+list_target_fdr <- seq(0.01, 1, length.out = 30) 
 
 # 2. FONCTIONS DE SIMULATION ET DE PERFORMANCE
 
