@@ -129,7 +129,7 @@ res_dfs <- df_perf_maker_by_fdp_bins(table.perf.comp, c("BVS+KO", "LCD+KO"), n_b
 df_bins <- res_dfs[[1]]; df_raw <- res_dfs[[2]]
 colors_paper <- c("BVS+KO" = "#6050dc", "LCD+KO" = "#009E73")
 
-# Graphe A : Histogramme (position = "dodge" pour barres côte à côte)
+# Graphe A : Histogramme 
 g_hist <- ggplot(df_raw, aes(x = fdp, fill = Method)) +
   geom_histogram(bins = 10, position = "dodge", alpha = 1, color = "white") +
   scale_fill_manual(values = colors_paper) +
@@ -137,7 +137,7 @@ g_hist <- ggplot(df_raw, aes(x = fdp, fill = Method)) +
   theme_minimal() +
   theme(axis.text.x = element_blank(), axis.ticks.x = element_blank())
 
-# Graphe B : Courbe Puissance vs FDP (Points réduits à 1.5)
+# Graphe B : Courbe Puissance vs FDP 
 g_main <- ggplot(df_bins, aes(x = mean_fdp, y = mean_power, color = Method, fill = Method)) +
   geom_ribbon(aes(ymin = mean_power - sd_power, ymax = mean_power + sd_power), 
               alpha = 0.15, color = NA) +
