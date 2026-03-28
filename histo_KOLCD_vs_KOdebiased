@@ -13,7 +13,7 @@ library(tidyr)
 library(ggpubr)
 library(knockoff)
 
-# --- 1. PARAMÈTRES ET DONNÉES ---
+# 1.PARAMÈTRES ET DONNÉES 
 chemin_fichier <- "C:/Users/axelC/Downloads/TRSANTEApo/dat_vst_NS_no_Inel_selected.txt"
 if (!file.exists(chemin_fichier)) stop("Fichier introuvable.")
 
@@ -26,7 +26,7 @@ k_exp <- 10
 amplitude_exp <- 3.5   
 list_target_fdr <- seq(0.01, 1, length.out = 30) 
 
-# --- 2. FONCTIONS DE SIMULATION ET MÉTRIQUES ---
+# 2. FONCTIONS DE SIMULATION ET MÉTRIQUES
 
 beta.sample <- function(p, k, amplitude){ 
   nonzero <- sample(p, k); beta <- rep(0, p)
@@ -65,7 +65,7 @@ create.LSCIP_parallel <- function(X) {
   return(mat_lasso_x + mat_residuals[, sample(p)]) 
 }
 
-# --- 3. STATISTIQUE KO DEBIASED LASSO ---
+# 3. STATISTIQUE KO DEBIASED LASSO
 
 stat.ko_debiased <- function(X, X_ko, y) {
   X_aug <- scale(cbind(X, X_ko))
@@ -94,7 +94,7 @@ stat.ko_debiased <- function(X, X_ko, y) {
   return(abs(b_deb[1:p_orig]) - abs(b_deb[(p_orig+1):pp_aug]))
 }
 
-# --- 4. FONCTION DE MISE EN FORME ---
+# 4. FONCTION DE MISE EN FORME
 
 df_perf_maker_combined <- function(table.perf, stats_names, n_bins = 10){
   df_raw <- data.frame(
@@ -119,7 +119,7 @@ df_perf_maker_combined <- function(table.perf, stats_names, n_bins = 10){
   return(list(df_summarized, df_raw))
 }
 
-# --- 5. BOUCLE DE SIMULATION ---
+# 5. BOUCLE DE SIMULATION
 
 cat("Génération des Knockoffs LSCIP...\n")
 X_ko <- create.LSCIP_parallel(X_real)
@@ -149,7 +149,7 @@ for (i in 1:n_sim) {
   }
 }
 
-# --- 6. VISUALISATION (VERT & ORANGE) ---
+# 6. VISUALISATION
 
 res_dfs <- df_perf_maker_combined(table.perf.comp, c("KO LCD", "KO Debiased"), n_bins = 10)
 df_bins <- res_dfs[[1]]; df_raw <- res_dfs[[2]]
@@ -157,7 +157,7 @@ df_bins <- res_dfs[[1]]; df_raw <- res_dfs[[2]]
 # Palette : Vert pour LCD, Orange pour Debiased
 colors_paper <- c("KO LCD" = "#009E73", "KO Debiased" = "#D55E00")
 
-# Graphe du haut : Histogrammes (position dodge)
+# Graphe du haut : histos
 g_hist <- ggplot(df_raw, aes(x = fdp, fill = Method)) +
   geom_histogram(bins = 10, alpha = 0.8, position = "dodge", color = "white") +
   scale_fill_manual(values = colors_paper) +
@@ -165,7 +165,7 @@ g_hist <- ggplot(df_raw, aes(x = fdp, fill = Method)) +
   theme_minimal() +
   theme(axis.text.x = element_blank(), axis.ticks.x = element_blank())
 
-# Graphe du bas : Courbe Puissance vs FDP (points fins)
+# Graphe du bas : Courbe Puissance vs FDP
 g_main <- ggplot(df_bins, aes(x = mean_fdp, y = mean_power, color = Method, fill = Method)) +
   geom_ribbon(aes(ymin = mean_power - sd_power, ymax = mean_power + sd_power), 
               alpha = 0.15, color = NA) +
