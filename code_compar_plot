@@ -1,6 +1,6 @@
 
-# CODE COMPLET : COMPARARAISON BVS (Z) ET BVS+KO (W) 
-# 10 ITÉRATIONS - AFFICHAGE DANS LES TITRES DE FACETTES
+# COMPARARAISON BVS (Z) ET BVS+KO (W) 
+# 10 ITÉRATIONS 
 rm(list = ls()) 
 set.seed(123) 
 
@@ -79,7 +79,7 @@ beta.sample <- function(p, k, amplitude){
   return(beta) 
 }
 
-# 3. BOUCLE DE SIMULATION (10 ITÉRATIONS)
+# 3. BOUCLE DE SIMULATION 
 X_ko <- as.matrix(create.LSCIP_M_times(X_real, M = 1))
 final_results <- data.frame()
 summary_counts <- data.frame() 
