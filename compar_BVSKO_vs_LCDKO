@@ -1,4 +1,4 @@
-# CODE puissance 
+# CODE PUISSANCE
 
 rm(list = ls()) 
 set.seed(123) 
